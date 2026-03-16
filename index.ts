@@ -53,6 +53,11 @@ import {
   stringifySmartMetadata,
   toLifecycleMemory,
 } from "./src/smart-metadata.js";
+import {
+  filterUserMdExclusiveRecallResults,
+  isUserMdExclusiveMemory,
+  type WorkspaceBoundaryConfig,
+} from "./src/workspace-boundary.js";
 
 // ============================================================================
 // Configuration & Types
@@ -132,6 +137,7 @@ interface PluginConfig {
     apiKey?: string;
     model?: string;
     baseURL?: string;
+    timeoutMs?: number;
   };
   extractMinMessages?: number;
   extractMaxChars?: number;
@@ -163,6 +169,7 @@ interface PluginConfig {
     dedupeErrorSignals?: boolean;
   };
   mdMirror?: { enabled?: boolean; dir?: string };
+  workspaceBoundary?: WorkspaceBoundaryConfig;
 }
 
 type ReflectionThinkLevel = "off" | "minimal" | "low" | "medium" | "high";
@@ -210,6 +217,10 @@ function parsePositiveInt(value: unknown): number | undefined {
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
   }
   return undefined;
+}
+
+function resolveLlmTimeoutMs(config: PluginConfig): number {
+  return parsePositiveInt(config.llm?.timeoutMs) ?? 30000;
 }
 
 function resolveHookAgentId(
@@ -1550,12 +1561,13 @@ const memoryLanceDBProPlugin = {
           ? resolveEnvVars(config.llm.baseURL)
           : config.embedding.baseURL;
         const llmModel = config.llm?.model || "openai/gpt-oss-120b";
+        const llmTimeoutMs = resolveLlmTimeoutMs(config);
 
         const llmClient = createLlmClient({
           apiKey: llmApiKey,
           model: llmModel,
           baseURL: llmBaseURL,
-          timeoutMs: 30000,
+          timeoutMs: llmTimeoutMs,
           log: (msg: string) => api.logger.debug(msg),
         });
 
@@ -1572,12 +1584,19 @@ const memoryLanceDBProPlugin = {
           extractMinMessages: config.extractMinMessages ?? 2,
           extractMaxChars: config.extractMaxChars ?? 8000,
           defaultScope: config.scopes?.default ?? "global",
+          workspaceBoundary: config.workspaceBoundary,
           log: (msg: string) => api.logger.info(msg),
           debugLog: (msg: string) => api.logger.debug(msg),
           noiseBank,
         });
 
-        api.logger.info("memory-lancedb-pro: smart extraction enabled (LLM model: " + llmModel + ", noise bank: ON)");
+        api.logger.info(
+          "memory-lancedb-pro: smart extraction enabled (LLM model: "
+          + llmModel
+          + ", timeoutMs: "
+          + llmTimeoutMs
+          + ", noise bank: ON)",
+        );
       } catch (err) {
         api.logger.warn(`memory-lancedb-pro: smart extraction init failed, falling back to regex: ${String(err)}`);
       }
@@ -1838,6 +1857,7 @@ const memoryLanceDBProPlugin = {
         agentId: undefined, // Will be determined at runtime from context
         workspaceDir: getDefaultWorkspaceDir(),
         mdMirror,
+        workspaceBoundary: config.workspaceBoundary,
       },
       {
         enableManagementTools: config.enableManagementTools,
@@ -1864,11 +1884,13 @@ const memoryLanceDBProPlugin = {
             const llmBaseURL = config.llm?.baseURL
               ? resolveEnvVars(config.llm.baseURL)
               : config.embedding.baseURL;
+            const llmTimeoutMs = resolveLlmTimeoutMs(config);
             return createLlmClient({
               apiKey: llmApiKey,
               model: config.llm?.model || "openai/gpt-oss-120b",
               baseURL: llmBaseURL,
-              timeoutMs: 30000,
+              timeoutMs: llmTimeoutMs,
+              log: (msg: string) => api.logger.debug(msg),
             });
           } catch { return undefined; }
         })() : undefined,
@@ -1901,12 +1923,12 @@ const memoryLanceDBProPlugin = {
           const agentId = resolveHookAgentId(ctx?.agentId, (event as any).sessionKey);
           const accessibleScopes = scopeManager.getAccessibleScopes(agentId);
 
-          const results = await retrieveWithRetry({
+          const results = filterUserMdExclusiveRecallResults(await retrieveWithRetry({
             query: event.prompt,
             limit: 3,
             scopeFilter: accessibleScopes,
             source: "auto-recall",
-          });
+          }), config.workspaceBoundary);
 
           if (results.length === 0) {
             return;
@@ -2143,6 +2165,12 @@ const memoryLanceDBProPlugin = {
                 return; // Smart extraction handled everything
               }
 
+              if ((stats.boundarySkipped ?? 0) > 0) {
+                api.logger.info(
+                  `memory-lancedb-pro: smart extraction skipped ${stats.boundarySkipped} USER.md-exclusive candidate(s) for agent ${agentId}; continuing to regex fallback for non-boundary texts`,
+                );
+              }
+
               api.logger.info(
                 `memory-lancedb-pro: smart extraction produced no persisted memories for agent ${agentId} (created=${stats.created}, merged=${stats.merged}, skipped=${stats.skipped}); falling back to regex capture`,
               );
@@ -2180,6 +2208,13 @@ const memoryLanceDBProPlugin = {
           // Store each capturable piece (limit to 3 per conversation)
           let stored = 0;
           for (const text of toCapture.slice(0, 3)) {
+            if (isUserMdExclusiveMemory({ text }, config.workspaceBoundary)) {
+              api.logger.info(
+                `memory-lancedb-pro: skipped USER.md-exclusive auto-capture text for agent ${agentId}`,
+              );
+              continue;
+            }
+
             const category = detectCategory(text);
             const vector = await embedder.embedPassage(text);
 
@@ -3103,6 +3138,12 @@ export function parsePluginConfig(value: unknown): PluginConfig {
   const sessionMemoryRaw = typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
     ? cfg.sessionMemory as Record<string, unknown>
     : null;
+  const workspaceBoundaryRaw = typeof cfg.workspaceBoundary === "object" && cfg.workspaceBoundary !== null
+    ? cfg.workspaceBoundary as Record<string, unknown>
+    : null;
+  const userMdExclusiveRaw = typeof workspaceBoundaryRaw?.userMdExclusive === "object" && workspaceBoundaryRaw.userMdExclusive !== null
+    ? workspaceBoundaryRaw.userMdExclusive as Record<string, unknown>
+    : null;
   const sessionStrategyRaw = cfg.sessionStrategy;
   const legacySessionMemoryEnabled = typeof sessionMemoryRaw?.enabled === "boolean"
     ? sessionMemoryRaw.enabled
@@ -3239,6 +3280,20 @@ export function parsePluginConfig(value: unknown): PluginConfig {
             typeof (cfg.mdMirror as Record<string, unknown>).dir === "string"
               ? ((cfg.mdMirror as Record<string, unknown>).dir as string)
               : undefined,
+        }
+        : undefined,
+    workspaceBoundary:
+      workspaceBoundaryRaw
+        ? {
+          userMdExclusive: userMdExclusiveRaw
+            ? {
+              enabled: userMdExclusiveRaw.enabled === true,
+              routeProfile: userMdExclusiveRaw.routeProfile !== false,
+              routeCanonicalName: userMdExclusiveRaw.routeCanonicalName !== false,
+              routeCanonicalAddressing: userMdExclusiveRaw.routeCanonicalAddressing !== false,
+              filterRecall: userMdExclusiveRaw.filterRecall !== false,
+            }
+            : undefined,
         }
         : undefined,
   };
