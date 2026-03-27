@@ -518,36 +518,51 @@ export class Embedder {
    */
   private async embedWithRetry(payload: any, signal?: AbortSignal): Promise<any> {
     const maxAttempts = this.clients.length;
+    // For transient 429s (single-key deployments), retry up to 3 times with backoff
+    // before giving up. Jina can return 429 transiently even under the RPM limit.
+    const TRANSIENT_RETRY_ATTEMPTS = 3;
+    const TRANSIENT_RETRY_BASE_MS = 2000;
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const client = this.nextClient();
-      try {
-        // Pass signal to OpenAI SDK if provided (SDK v6+ supports this)
-        return await client.embeddings.create(payload, signal ? { signal } : undefined);
-      } catch (error) {
-        // If aborted, re-throw immediately
-        if (error instanceof Error && error.name === 'AbortError') {
-          throw error;
-        }
-        
-        lastError = error instanceof Error ? error : new Error(String(error));
 
-        if (this.isRateLimitError(error) && attempt < maxAttempts - 1) {
-          console.log(
-            `[memory-lancedb-pro] Attempt ${attempt + 1}/${maxAttempts} hit rate limit, rotating to next key...`
-          );
-          continue;
-        }
+      // Inner retry loop for transient 429s on this key
+      for (let transient = 0; transient < TRANSIENT_RETRY_ATTEMPTS; transient++) {
+        try {
+          // Pass signal to OpenAI SDK if provided (SDK v6+ supports this)
+          return await client.embeddings.create(payload, signal ? { signal } : undefined);
+        } catch (error) {
+          // If aborted, re-throw immediately
+          if (error instanceof Error && error.name === 'AbortError') {
+            throw error;
+          }
 
-        // Non-rate-limit error → don't retry, let caller handle (e.g. chunking)
-        if (!this.isRateLimitError(error)) {
-          throw error;
+          lastError = error instanceof Error ? error : new Error(String(error));
+
+          if (!this.isRateLimitError(error)) {
+            // Non-rate-limit error → don't retry
+            throw error;
+          }
+
+          if (transient < TRANSIENT_RETRY_ATTEMPTS - 1) {
+            // Transient 429 — wait with exponential backoff and retry same key
+            const delay = TRANSIENT_RETRY_BASE_MS * Math.pow(2, transient);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
         }
+      }
+
+      // This key exhausted transient retries — try next key if available
+      if (attempt < maxAttempts - 1) {
+        console.log(
+          `[memory-lancedb-pro] Key ${attempt + 1}/${maxAttempts} rate limited after retries, rotating to next key...`
+        );
       }
     }
 
-    // All keys exhausted with rate-limit errors
+    // All keys exhausted
     throw new Error(
       `All ${maxAttempts} API keys exhausted (rate limited). Last error: ${lastError?.message || "unknown"}`,
       { cause: lastError }
