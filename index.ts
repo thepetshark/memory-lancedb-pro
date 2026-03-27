@@ -419,9 +419,17 @@ function getExtensionApiImportSpecifiers(): string[] {
     // ignore resolve failures and continue fallback probing
   }
 
+  // npm-global installs (user-local, common on Linux/macOS without sudo npm -g)
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  if (home) {
+    specifiers.push(toImportSpecifier(`${home}/.npm-global/lib/node_modules/openclaw/dist/extensionAPI.js`));
+    specifiers.push(toImportSpecifier(`${home}/.npm/lib/node_modules/openclaw/dist/extensionAPI.js`));
+  }
+
   specifiers.push(toImportSpecifier("/usr/lib/node_modules/openclaw/dist/extensionAPI.js"));
   specifiers.push(toImportSpecifier("/usr/local/lib/node_modules/openclaw/dist/extensionAPI.js"));
   specifiers.push(toImportSpecifier("/opt/homebrew/lib/node_modules/openclaw/dist/extensionAPI.js"));
+  specifiers.push(toImportSpecifier("/usr/local/share/npm/lib/node_modules/openclaw/dist/extensionAPI.js"));
 
   return [...new Set(specifiers.filter(Boolean))];
 }
