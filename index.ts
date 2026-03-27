@@ -93,6 +93,7 @@ interface PluginConfig {
   };
   dbPath?: string;
   autoCapture?: boolean;
+  startupEmbeddingTest?: boolean;
   autoRecall?: boolean;
   autoRecallMinLength?: number;
   autoRecallMinRepeated?: number;
@@ -3639,7 +3640,12 @@ const memoryLanceDBProPlugin = {
         };
 
         // Fire-and-forget: allow gateway to start serving immediately.
-        setTimeout(() => void runStartupChecks(), 0);
+        // startupEmbeddingTest defaults true; set false to skip the Jina
+        // probe call on init (avoids burning rate-limit quota on restart
+        // when multiple agents initialise simultaneously).
+        if (config.startupEmbeddingTest !== false) {
+          setTimeout(() => void runStartupChecks(), 0);
+        }
 
         // Check for legacy memories that could be upgraded
         setTimeout(async () => {
@@ -3778,6 +3784,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
           : undefined,
     },
     dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : undefined,
+    startupEmbeddingTest: cfg.startupEmbeddingTest !== false,
     autoCapture: cfg.autoCapture !== false,
     // Default OFF: only enable when explicitly set to true.
     autoRecall: cfg.autoRecall === true,
