@@ -187,6 +187,7 @@ interface PluginConfig {
     writeLegacyCombined?: boolean;
     injectMode?: ReflectionInjectMode;
     agentId?: string;
+    model?: string;
     messageCount?: number;
     maxInputChars?: number;
     timeoutMs?: number;
@@ -1125,6 +1126,7 @@ async function generateReflectionText(params: {
   workspaceDir: string;
   timeoutMs: number;
   thinkLevel: ReflectionThinkLevel;
+  modelOverride?: string;
   toolErrorSignals?: ReflectionErrorSignal[];
   logger?: { info?: (message: string) => void; warn?: (message: string) => void };
 }): Promise<{ text: string; usedFallback: boolean; promptHash: string; error?: string; runner: "embedded" | "cli" | "fallback" }> {
@@ -1154,7 +1156,7 @@ async function generateReflectionText(params: {
       onLog: onRetryLog,
       execute: async () => {
         const runEmbeddedPiAgent = await loadEmbeddedPiRunner();
-        const modelRef = resolveAgentPrimaryModelRef(params.cfg, params.agentId);
+        const modelRef = params.modelOverride ?? resolveAgentPrimaryModelRef(params.cfg, params.agentId);
         const { provider, model } = modelRef ? splitProviderModel(modelRef) : {};
         const embeddedTimeoutMs = Math.max(params.timeoutMs + 5000, 15000);
 
@@ -3013,6 +3015,7 @@ const memoryLanceDBProPlugin = {
       const reflectionTimeoutMs = config.memoryReflection?.timeoutMs ?? DEFAULT_REFLECTION_TIMEOUT_MS;
       const reflectionThinkLevel = config.memoryReflection?.thinkLevel ?? DEFAULT_REFLECTION_THINK_LEVEL;
       const reflectionAgentId = asNonEmptyString(config.memoryReflection?.agentId);
+      const reflectionModel = asNonEmptyString(config.memoryReflection?.model);
       const reflectionErrorReminderMaxEntries =
         parsePositiveInt(config.memoryReflection?.errorReminderMaxEntries) ?? DEFAULT_REFLECTION_ERROR_REMINDER_MAX_ENTRIES;
       const reflectionDedupeErrorSignals = config.memoryReflection?.dedupeErrorSignals !== false;
@@ -3249,6 +3252,7 @@ const memoryLanceDBProPlugin = {
             workspaceDir,
             timeoutMs: reflectionTimeoutMs,
             thinkLevel: reflectionThinkLevel,
+            modelOverride: reflectionModel,
             toolErrorSignals,
             logger: api.logger,
           });
