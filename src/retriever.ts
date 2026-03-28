@@ -848,6 +848,10 @@ export class MemoryRetriever {
           this.config.rerankEndpoint || "https://api.jina.ai/v1/rerank";
         const documents = results.map((r) => r.entry.text);
 
+        // [DIAG] Log rerank call with token estimate
+        const rerankEstTokens = Math.ceil((query.length + documents.reduce((s, d) => s + d.length, 0)) / 4);
+        console.log(`[memory-lancedb-pro] [DIAG] rerank: provider=${provider}, docs=${documents.length}, queryChars=${query.length}, totalChars=${query.length + documents.reduce((s, d) => s + d.length, 0)}, estTokens=${rerankEstTokens}`);
+
         // Build provider-specific request
         const { headers, body } = buildRerankRequest(
           provider,

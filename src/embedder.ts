@@ -396,6 +396,11 @@ export function getVectorDimensions(model: string, overrideDims?: number): numbe
 // ============================================================================
 
 export class Embedder {
+  // [DIAG] Static counters for RPM/TPM tracking across all instances
+  static _embedCallCount = 0;
+  static _embedTokenEstimate = 0;
+  static _embedWindowStart = Date.now();
+
   /** Pool of OpenAI clients — one per API key for round-robin rotation. */
   private clients: OpenAI[];
   /** Round-robin index for client rotation. */
@@ -675,6 +680,24 @@ export class Embedder {
     if (!text || text.trim().length === 0) {
       throw new Error("Cannot embed empty text");
     }
+
+    // [DIAG] Track embed calls for RPM/TPM debugging
+    Embedder._embedCallCount++;
+    const estTokens = Math.ceil(text.length / 4); // rough char-to-token estimate
+    Embedder._embedTokenEstimate += estTokens;
+    const now = Date.now();
+    if (now - Embedder._embedWindowStart > 60_000) {
+      // Log and reset every 60s
+      if (Embedder._embedCallCount > 1) {
+        console.log(
+          `[memory-lancedb-pro] [DIAG] embed stats last 60s: calls=${Embedder._embedCallCount}, estTokens=${Embedder._embedTokenEstimate}, avgTokens=${Math.round(Embedder._embedTokenEstimate / Embedder._embedCallCount)}, task=${task ?? "none"}`
+        );
+      }
+      Embedder._embedCallCount = 1;
+      Embedder._embedTokenEstimate = estTokens;
+      Embedder._embedWindowStart = now;
+    }
+    console.log(`[memory-lancedb-pro] [DIAG] embedSingle: chars=${text.length}, estTokens=${estTokens}, task=${task ?? "none"}, depth=${depth}, totalCalls=${Embedder._embedCallCount}`);
 
     // FR-01: Recursion depth limit — force truncate when too deep
     if (depth >= MAX_EMBED_DEPTH) {

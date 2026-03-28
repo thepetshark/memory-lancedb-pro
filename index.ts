@@ -1618,6 +1618,7 @@ const pluginVersion = getPluginVersion();
 // Without this, register() fires 5× per agent on /new, causing 35× Jina API calls
 // on gateway restart and blowing past the 100 RPM free-tier limit.
 let _pluginRegistered = false;
+let _pluginRegisterCallCount = 0;
 
 const memoryLanceDBProPlugin = {
   id: "memory-lancedb-pro",
@@ -1627,11 +1628,13 @@ const memoryLanceDBProPlugin = {
   kind: "memory" as const,
 
   register(api: OpenClawPluginApi) {
+    _pluginRegisterCallCount++;
     if (_pluginRegistered) {
-      api.logger.debug?.("memory-lancedb-pro: already registered, skipping duplicate init");
+      api.logger.info(`memory-lancedb-pro: [GUARD] register() called again (call #${_pluginRegisterCallCount}) — skipping duplicate init`);
       return;
     }
     _pluginRegistered = true;
+    api.logger.info(`memory-lancedb-pro: [GUARD] first register() call (#${_pluginRegisterCallCount}) — proceeding with init`);
     // Parse and validate configuration
     const config = parsePluginConfig(api.pluginConfig);
 
@@ -3173,6 +3176,7 @@ const memoryLanceDBProPlugin = {
 
       const runMemoryReflection = async (event: any) => {
         const sessionKey = typeof event.sessionKey === "string" ? event.sessionKey : "";
+        const _reflectionHookStartMs = Date.now();
         try {
           pruneReflectionSessionState();
           const action = String(event?.action || "unknown");
@@ -3431,6 +3435,8 @@ const memoryLanceDBProPlugin = {
         } catch (err) {
           api.logger.warn(`memory-reflection: hook failed: ${String(err)}`);
         } finally {
+          const _reflectionHookElapsedMs = Date.now() - _reflectionHookStartMs;
+          api.logger.info(`memory-reflection: [DIAG] hook total elapsed=${_reflectionHookElapsedMs}ms for session ${sessionKey}`);
           if (sessionKey) {
             reflectionErrorStateBySession.delete(sessionKey);
           }
