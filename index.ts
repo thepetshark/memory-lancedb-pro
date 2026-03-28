@@ -1613,6 +1613,12 @@ const pluginVersion = getPluginVersion();
 // Plugin Definition
 // ============================================================================
 
+// Singleton guard: prevent duplicate registration when the embedded Pi runner
+// (used by memory-reflection) spawns a temp session that re-triggers plugin init.
+// Without this, register() fires 5× per agent on /new, causing 35× Jina API calls
+// on gateway restart and blowing past the 100 RPM free-tier limit.
+let _pluginRegistered = false;
+
 const memoryLanceDBProPlugin = {
   id: "memory-lancedb-pro",
   name: "Memory (LanceDB Pro)",
@@ -1621,6 +1627,11 @@ const memoryLanceDBProPlugin = {
   kind: "memory" as const,
 
   register(api: OpenClawPluginApi) {
+    if (_pluginRegistered) {
+      api.logger.debug?.("memory-lancedb-pro: already registered, skipping duplicate init");
+      return;
+    }
+    _pluginRegistered = true;
     // Parse and validate configuration
     const config = parsePluginConfig(api.pluginConfig);
 
